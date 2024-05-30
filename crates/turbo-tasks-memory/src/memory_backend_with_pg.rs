@@ -24,10 +24,10 @@ use turbo_tasks::{
     event::{Event, EventListener},
     persisted_graph::{
         ActivateResult, DeactivateResult, PersistResult, PersistTaskState, PersistedGraph,
-        PersistedGraphApi, ReadTaskState, TaskCell, TaskData,
+        PersistedGraphApi, ReadTaskState, TaskCell, TaskCells, TaskData,
     },
     util::{IdFactory, NoMoveVec, SharedError},
-    CellId, RawVc, TaskId, TaskIdSet, TraitTypeId, TurboTasksBackendApi, Unused,
+    CellId, RawVc, TaskId, TaskIdSet, TraitTypeId, TurboTasksBackendApi, Unused, ValueTypeId,
 };
 
 type RootTaskFn =
@@ -64,7 +64,7 @@ struct MemoryTaskState {
     need_persist: bool,
     has_changes: bool,
     freshness: TaskFreshness,
-    cells: HashMap<CellId, (TaskCell, TaskIdSet)>,
+    cells: HashMap<CellId, (TaskCell<()>, TaskIdSet)>,
     output: Option<Result<RawVc, SharedError>>,
     output_dependent: TaskIdSet,
     dependencies: AutoSet<RawVc>,
@@ -265,6 +265,7 @@ impl<P: PersistedGraph> MemoryBackendWithPersistedGraph<P> {
                     },
                     cells: data
                         .cells
+                        .0
                         .into_iter()
                         .map(|(k, s)| (k, (s, AutoSet::default())))
                         .collect(),
@@ -806,10 +807,12 @@ impl<P: PersistedGraph> MemoryBackendWithPersistedGraph<P> {
                                         let data = TaskData {
                                             children: children.iter().cloned().collect(),
                                             dependencies: dependencies.iter().cloned().collect(),
-                                            cells: cells
-                                                .iter()
-                                                .map(|(k, (s, _))| (*k, s.clone()))
-                                                .collect(),
+                                            cells: TaskCells(
+                                                cells
+                                                    .iter()
+                                                    .map(|(k, (s, _))| (*k, s.clone()))
+                                                    .collect(),
+                                            ),
                                             output: *output,
                                         };
                                         let externally_active =
@@ -1324,7 +1327,7 @@ impl<P: PersistedGraph> Backend for MemoryBackendWithPersistedGraph<P> {
         index: CellId,
         reader: TaskId,
         turbo_tasks: &dyn TurboTasksBackendApi<MemoryBackendWithPersistedGraph<P>>,
-    ) -> Result<Result<CellContent, EventListener>> {
+    ) -> Result<Result<CellContent<ValueTypeId>, EventListener>> {
         let (mut state, _task_info) = self.mem_state_mut(task, turbo_tasks);
         let TaskState {
             ref mut scheduled,
@@ -1346,7 +1349,7 @@ impl<P: PersistedGraph> Backend for MemoryBackendWithPersistedGraph<P> {
         if let Some((cell, dependent)) = mem_state.cells.get_mut(&index) {
             match cell {
                 TaskCell::Content(content) => {
-                    let content = content.clone();
+                    let content = content.typed(index.type_id);
                     let need_dependency = dependent.insert(reader);
                     drop(state);
                     if need_dependency {
@@ -1389,7 +1392,7 @@ impl<P: PersistedGraph> Backend for MemoryBackendWithPersistedGraph<P> {
         task: TaskId,
         index: CellId,
         turbo_tasks: &dyn TurboTasksBackendApi<MemoryBackendWithPersistedGraph<P>>,
-    ) -> Result<Result<CellContent, EventListener>> {
+    ) -> Result<Result<CellContent<ValueTypeId>, EventListener>> {
         let (mut state, _) = self.mem_state_mut(task, turbo_tasks);
         let TaskState {
             ref mut scheduled,
@@ -1403,7 +1406,7 @@ impl<P: PersistedGraph> Backend for MemoryBackendWithPersistedGraph<P> {
             .ok_or_else(|| anyhow!("Cannot read non-existing cell"))?;
         match cell {
             TaskCell::Content(content) => {
-                let content = content.clone();
+                let content = content.typed(index.type_id);
                 drop(state);
                 Ok(Ok(content))
             }
@@ -1427,12 +1430,12 @@ impl<P: PersistedGraph> Backend for MemoryBackendWithPersistedGraph<P> {
         task: TaskId,
         index: CellId,
         turbo_tasks: &dyn TurboTasksBackendApi<MemoryBackendWithPersistedGraph<P>>,
-    ) -> Result<CellContent> {
+    ) -> Result<CellContent<ValueTypeId>> {
         let (state, _) = self.mem_state_mut(task, turbo_tasks);
         let mem_state = state.memory.as_ref().unwrap();
         if let Some((cell, _)) = mem_state.cells.get(&index) {
             match cell {
-                TaskCell::Content(content) => Ok(content.clone()),
+                TaskCell::Content(content) => Ok(content.typed(index.type_id)),
                 TaskCell::NeedComputation => Ok(CellContent(None)),
             }
         } else {
@@ -1475,9 +1478,13 @@ impl<P: PersistedGraph> Backend for MemoryBackendWithPersistedGraph<P> {
         &self,
         task: TaskId,
         index: CellId,
-        content: CellContent,
+        content: CellContent<ValueTypeId>,
         turbo_tasks: &dyn TurboTasksBackendApi<MemoryBackendWithPersistedGraph<P>>,
     ) {
+        if let Some(x) = content.0.as_ref().map(|c| c.0) {
+            debug_assert_eq!(x, index.type_id, "Type mismatch in update_task_cell")
+        }
+
         let (mut state, task_info) = self.mem_state_mut(task, turbo_tasks);
         let TaskState {
             ref mut memory,
@@ -1487,7 +1494,7 @@ impl<P: PersistedGraph> Backend for MemoryBackendWithPersistedGraph<P> {
         let mem_state = memory.as_mut().unwrap();
         mem_state.has_changes = true;
         let (cell, dependent) = mem_state.cells.entry(index).or_default();
-        *cell = TaskCell::Content(content);
+        *cell = TaskCell::Content(content.untyped());
         mem_state.event_cells.notify(usize::MAX);
         let is_persisted = persisted.is_some();
         if !dependent.is_empty() {

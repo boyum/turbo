@@ -129,14 +129,11 @@ impl RawVc {
                         .await
                         .map_err(|source| ResolveTypeError::ReadError { source })?;
                     if let CellContent(Some(shared_reference)) = content {
-                        if let SharedReference(Some(value_type), _) = shared_reference {
-                            if get_value_type(value_type).has_trait(&trait_type) {
-                                return Ok(Some(RawVc::TaskCell(task, index)));
-                            } else {
-                                return Ok(None);
-                            }
+                        let SharedReference(value_type, _) = shared_reference;
+                        if get_value_type(value_type).has_trait(&trait_type) {
+                            return Ok(Some(RawVc::TaskCell(task, index)));
                         } else {
-                            return Err(ResolveTypeError::UntypedContent);
+                            return Ok(None);
                         }
                     } else {
                         return Err(ResolveTypeError::NoContent);
@@ -165,14 +162,11 @@ impl RawVc {
                         .await
                         .map_err(|source| ResolveTypeError::ReadError { source })?;
                     if let CellContent(Some(shared_reference)) = content {
-                        if let SharedReference(Some(cell_value_type), _) = shared_reference {
-                            if cell_value_type == value_type {
-                                return Ok(Some(RawVc::TaskCell(task, index)));
-                            } else {
-                                return Ok(None);
-                            }
+                        let SharedReference(cell_value_type, _) = shared_reference;
+                        if cell_value_type == value_type {
+                            return Ok(Some(RawVc::TaskCell(task, index)));
                         } else {
-                            return Err(ResolveTypeError::UntypedContent);
+                            return Ok(None);
                         }
                     } else {
                         return Err(ResolveTypeError::NoContent);

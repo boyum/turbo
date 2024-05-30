@@ -92,7 +92,7 @@ pub trait TurboTasksApi: TurboTasksCallApi + Sync + Send {
         &self,
         task: TaskId,
         index: CellId,
-    ) -> Result<Result<CellContent, EventListener>>;
+    ) -> Result<Result<CellContent<ValueTypeId>, EventListener>>;
 
     /// INVALIDATION: Be careful with this, it will not track dependencies, so
     /// using it could break cache invalidation.
@@ -100,7 +100,7 @@ pub trait TurboTasksApi: TurboTasksCallApi + Sync + Send {
         &self,
         task: TaskId,
         index: CellId,
-    ) -> Result<Result<CellContent, EventListener>>;
+    ) -> Result<Result<CellContent<ValueTypeId>, EventListener>>;
 
     fn read_task_collectibles(&self, task: TaskId, trait_id: TraitTypeId) -> AutoMap<RawVc, i32>;
 
@@ -114,10 +114,10 @@ pub trait TurboTasksApi: TurboTasksCallApi + Sync + Send {
         &self,
         current_task: TaskId,
         index: CellId,
-    ) -> Result<CellContent>;
+    ) -> Result<CellContent<ValueTypeId>>;
 
-    fn read_own_task_cell(&self, task: TaskId, index: CellId) -> Result<CellContent>;
-    fn update_own_task_cell(&self, task: TaskId, index: CellId, content: CellContent);
+    fn read_own_task_cell(&self, task: TaskId, index: CellId) -> Result<CellContent<ValueTypeId>>;
+    fn update_own_task_cell(&self, task: TaskId, index: CellId, content: CellContent<ValueTypeId>);
     fn mark_own_task_as_finished(&self, task: TaskId);
 
     fn connect_task(&self, task: TaskId);
@@ -908,7 +908,7 @@ impl<B: Backend + 'static> TurboTasksApi for TurboTasks<B> {
         &self,
         task: TaskId,
         index: CellId,
-    ) -> Result<Result<CellContent, EventListener>> {
+    ) -> Result<Result<CellContent<ValueTypeId>, EventListener>> {
         self.backend
             .try_read_task_cell(task, index, current_task("reading Vcs"), self)
     }
@@ -917,7 +917,7 @@ impl<B: Backend + 'static> TurboTasksApi for TurboTasks<B> {
         &self,
         task: TaskId,
         index: CellId,
-    ) -> Result<Result<CellContent, EventListener>> {
+    ) -> Result<Result<CellContent<ValueTypeId>, EventListener>> {
         self.backend.try_read_task_cell_untracked(task, index, self)
     }
 
@@ -925,7 +925,7 @@ impl<B: Backend + 'static> TurboTasksApi for TurboTasks<B> {
         &self,
         current_task: TaskId,
         index: CellId,
-    ) -> Result<CellContent> {
+    ) -> Result<CellContent<ValueTypeId>> {
         self.backend
             .try_read_own_task_cell_untracked(current_task, index, self)
     }
@@ -972,12 +972,12 @@ impl<B: Backend + 'static> TurboTasksApi for TurboTasks<B> {
         }
     }
 
-    fn read_own_task_cell(&self, task: TaskId, index: CellId) -> Result<CellContent> {
+    fn read_own_task_cell(&self, task: TaskId, index: CellId) -> Result<CellContent<ValueTypeId>> {
         // INVALIDATION: don't need to track a dependency to itself
         self.try_read_own_task_cell_untracked(task, index)
     }
 
-    fn update_own_task_cell(&self, task: TaskId, index: CellId, content: CellContent) {
+    fn update_own_task_cell(&self, task: TaskId, index: CellId, content: CellContent<ValueTypeId>) {
         self.backend.update_task_cell(task, index, content, self);
     }
 
@@ -1431,7 +1431,7 @@ pub(crate) async fn read_task_cell(
     this: &dyn TurboTasksApi,
     id: TaskId,
     index: CellId,
-) -> Result<CellContent> {
+) -> Result<CellContent<ValueTypeId>> {
     loop {
         match this.try_read_task_cell(id, index)? {
             Ok(result) => return Ok(result),
@@ -1467,10 +1467,7 @@ impl CurrentCellRef {
             tt.update_own_task_cell(
                 self.current_task,
                 self.index,
-                CellContent(Some(SharedReference(
-                    Some(self.index.type_id),
-                    Arc::new(update),
-                ))),
+                CellContent(Some(SharedReference(self.index.type_id, Arc::new(update)))),
             )
         }
     }
@@ -1492,13 +1489,13 @@ impl CurrentCellRef {
             self.current_task,
             self.index,
             CellContent(Some(SharedReference(
-                Some(self.index.type_id),
+                self.index.type_id,
                 Arc::new(new_content),
             ))),
         )
     }
 
-    pub fn update_shared_reference(&self, shared_ref: SharedReference) {
+    pub fn update_shared_reference(&self, shared_ref: SharedReference<ValueTypeId>) {
         let tt = turbo_tasks();
         let content = tt.read_own_task_cell(self.current_task, self.index).ok();
         let update = if let Some(CellContent(Some(content))) = content {

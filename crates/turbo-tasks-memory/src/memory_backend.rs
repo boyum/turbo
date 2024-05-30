@@ -25,7 +25,7 @@ use turbo_tasks::{
     },
     event::EventListener,
     util::{IdFactory, NoMoveVec},
-    CellId, RawVc, TaskId, TaskIdSet, TraitTypeId, TurboTasksBackendApi, Unused,
+    CellId, RawVc, TaskId, TaskIdSet, TraitTypeId, TurboTasksBackendApi, Unused, ValueTypeId,
 };
 
 use crate::{
@@ -386,7 +386,7 @@ impl Backend for MemoryBackend {
         index: CellId,
         reader: TaskId,
         turbo_tasks: &dyn TurboTasksBackendApi<MemoryBackend>,
-    ) -> Result<Result<CellContent, EventListener>> {
+    ) -> Result<Result<CellContent<ValueTypeId>, EventListener>> {
         if task_id == reader {
             Ok(Ok(self.with_task(task_id, |task| {
                 task.with_cell(index, |cell| cell.read_own_content_untracked())
@@ -418,7 +418,7 @@ impl Backend for MemoryBackend {
         current_task: TaskId,
         index: CellId,
         _turbo_tasks: &dyn TurboTasksBackendApi<MemoryBackend>,
-    ) -> Result<CellContent> {
+    ) -> Result<CellContent<ValueTypeId>> {
         Ok(self.with_task(current_task, |task| {
             task.with_cell(index, |cell| cell.read_own_content_untracked())
         }))
@@ -429,7 +429,7 @@ impl Backend for MemoryBackend {
         task_id: TaskId,
         index: CellId,
         turbo_tasks: &dyn TurboTasksBackendApi<MemoryBackend>,
-    ) -> Result<Result<CellContent, EventListener>> {
+    ) -> Result<Result<CellContent<ValueTypeId>, EventListener>> {
         self.with_task(task_id, |task| {
             match task.with_cell_mut(index, self.gc_queue.as_ref(), |cell| {
                 cell.read_content_untracked(
@@ -487,7 +487,7 @@ impl Backend for MemoryBackend {
         &self,
         task: TaskId,
         index: CellId,
-        content: CellContent,
+        content: CellContent<ValueTypeId>,
         turbo_tasks: &dyn TurboTasksBackendApi<MemoryBackend>,
     ) {
         self.with_task(task, |task| {

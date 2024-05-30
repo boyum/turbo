@@ -7,7 +7,7 @@ use auto_hash_map::AutoSet;
 use turbo_tasks::{
     backend::CellContent,
     event::{Event, EventListener},
-    TaskId, TaskIdSet, TurboTasksBackendApi,
+    TaskId, TaskIdSet, TurboTasksBackendApi, ValueTypeId,
 };
 
 use crate::MemoryBackend;
@@ -36,7 +36,7 @@ pub(crate) enum Cell {
     /// GC operation will transition to the TrackedValueless state.
     Value {
         dependent_tasks: TaskIdSet,
-        content: CellContent,
+        content: CellContent<ValueTypeId>,
     },
 }
 
@@ -99,7 +99,7 @@ impl Cell {
         reader: TaskId,
         description: impl Fn() -> String + Sync + Send + 'static,
         note: impl Fn() -> String + Sync + Send + 'static,
-    ) -> Result<CellContent, RecomputingCell> {
+    ) -> Result<CellContent<ValueTypeId>, RecomputingCell> {
         if let Cell::Value {
             content,
             dependent_tasks,
@@ -123,7 +123,7 @@ impl Cell {
         &mut self,
         description: impl Fn() -> String + Sync + Send + 'static,
         note: impl Fn() -> String + Sync + Send + 'static,
-    ) -> Result<CellContent, RecomputingCell> {
+    ) -> Result<CellContent<ValueTypeId>, RecomputingCell> {
         match self {
             Cell::Empty => {
                 let listener = self.recompute(AutoSet::default(), description, note);
@@ -159,7 +159,7 @@ impl Cell {
     ///
     /// INVALIDATION: Be careful with this, it will not track
     /// dependencies, so using it could break cache invalidation.
-    pub fn read_own_content_untracked(&self) -> CellContent {
+    pub fn read_own_content_untracked(&self) -> CellContent<ValueTypeId> {
         match self {
             Cell::Empty | Cell::Recomputing { .. } | Cell::TrackedValueless { .. } => {
                 CellContent(None)
@@ -170,7 +170,7 @@ impl Cell {
 
     pub fn assign(
         &mut self,
-        content: CellContent,
+        content: CellContent<ValueTypeId>,
         turbo_tasks: &dyn TurboTasksBackendApi<MemoryBackend>,
     ) {
         match self {
@@ -247,7 +247,7 @@ impl Cell {
     /// Takes the content out of the cell. Make sure to drop the content outside
     /// of the task state lock.
     #[must_use]
-    pub fn gc_content(&mut self) -> Option<CellContent> {
+    pub fn gc_content(&mut self) -> Option<CellContent<ValueTypeId>> {
         match self {
             Cell::Empty | Cell::Recomputing { .. } | Cell::TrackedValueless { .. } => None,
             Cell::Value {

@@ -9,7 +9,7 @@ use std::{
 };
 
 use anyhow::Result;
-use serde::{ser::SerializeTuple, Deserialize, Serialize};
+use serde::{ser::SerializeTuple, Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
     backend::CellContent,
@@ -19,24 +19,49 @@ use crate::{
     registry, turbo_tasks, CellId, RawVc, TaskId, TraitType, ValueTypeId,
 };
 
+/// A reference to a piece of data with optional type information
 #[derive(Clone)]
-pub struct SharedReference(pub Option<ValueTypeId>, pub Arc<dyn Any + Send + Sync>);
+pub struct SharedReference<T: TypeData>(pub T, pub Arc<dyn Any + Send + Sync>);
 
-impl SharedReference {
-    pub fn downcast<T: Any + Send + Sync>(self) -> Option<Arc<T>> {
+pub trait TypeData: Debug + PartialEq + Eq + Serialize + for<'de> Deserialize<'de> {
+    fn type_id(&self) -> Option<ValueTypeId>;
+}
+
+impl TypeData for ValueTypeId {
+    fn type_id(&self) -> Option<ValueTypeId> {
+        Some(*self)
+    }
+}
+
+impl TypeData for () {
+    fn type_id(&self) -> Option<ValueTypeId> {
+        None
+    }
+}
+
+impl<T: TypeData> SharedReference<T> {
+    pub fn downcast<Ty: Any + Send + Sync>(self) -> Option<Arc<Ty>> {
         match Arc::downcast(self.1) {
             Ok(data) => Some(data),
             Err(_) => None,
         }
     }
+
+    pub(crate) fn typed(&self, type_id: ValueTypeId) -> SharedReference<ValueTypeId> {
+        SharedReference(type_id, self.1.clone())
+    }
+
+    pub(crate) fn untyped(&self) -> SharedReference<()> {
+        SharedReference((), self.1.clone())
+    }
 }
 
-impl Hash for SharedReference {
+impl<T: TypeData> Hash for SharedReference<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         Hash::hash(&(&*self.1 as *const (dyn Any + Send + Sync)), state)
     }
 }
-impl PartialEq for SharedReference {
+impl<T: TypeData> PartialEq for SharedReference<T> {
     // Must compare with PartialEq rather than std::ptr::addr_eq since the latter
     // only compares their addresses.
     #[allow(ambiguous_wide_pointer_comparisons)]
@@ -47,13 +72,13 @@ impl PartialEq for SharedReference {
         )
     }
 }
-impl Eq for SharedReference {}
-impl PartialOrd for SharedReference {
+impl<T: TypeData> Eq for SharedReference<T> {}
+impl<T: TypeData> PartialOrd for SharedReference<T> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
-impl Ord for SharedReference {
+impl<T: TypeData> Ord for SharedReference<T> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         Ord::cmp(
             &(&*self.1 as *const (dyn Any + Send + Sync)).cast::<()>(),
@@ -61,7 +86,7 @@ impl Ord for SharedReference {
         )
     }
 }
-impl Debug for SharedReference {
+impl<T: TypeData> Debug for SharedReference<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("SharedReference")
             .field(&self.0)
@@ -70,35 +95,30 @@ impl Debug for SharedReference {
     }
 }
 
-impl Serialize for SharedReference {
+impl Serialize for SharedReference<ValueTypeId> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        if let SharedReference(Some(ty), arc) = self {
-            let value_type = registry::get_value_type(*ty);
-            if let Some(serializable) = value_type.any_as_serializable(arc) {
-                let mut t = serializer.serialize_tuple(2)?;
-                t.serialize_element(registry::get_value_type_global_name(*ty))?;
-                t.serialize_element(serializable)?;
-                t.end()
-            } else {
-                Err(serde::ser::Error::custom(format!(
-                    "{:?} is not serializable",
-                    arc
-                )))
-            }
+        let SharedReference(ty, arc) = self;
+        let value_type = registry::get_value_type(*ty);
+        if let Some(serializable) = value_type.any_as_serializable(arc) {
+            let mut t = serializer.serialize_tuple(2)?;
+            t.serialize_element(registry::get_value_type_global_name(*ty))?;
+            t.serialize_element(serializable)?;
+            t.end()
         } else {
-            Err(serde::ser::Error::custom(
-                "untyped values are not serializable",
-            ))
+            Err(serde::ser::Error::custom(format!(
+                "{:?} is not serializable",
+                arc
+            )))
         }
     }
 }
 
-impl Display for SharedReference {
+impl<T: TypeData> Display for SharedReference<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(ty) = self.0 {
+        if let Some(ty) = self.0.type_id() {
             write!(f, "value of type {}", registry::get_value_type(ty).name)
         } else {
             write!(f, "untyped value")
@@ -106,7 +126,7 @@ impl Display for SharedReference {
     }
 }
 
-impl<'de> Deserialize<'de> for SharedReference {
+impl<'de> Deserialize<'de> for SharedReference<ValueTypeId> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -114,7 +134,7 @@ impl<'de> Deserialize<'de> for SharedReference {
         struct Visitor;
 
         impl<'de> serde::de::Visitor<'de> for Visitor {
-            type Value = SharedReference;
+            type Value = SharedReference<ValueTypeId>;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
                 formatter.write_str("a serializable shared reference")
@@ -129,7 +149,7 @@ impl<'de> Deserialize<'de> for SharedReference {
                         if let Some(seed) = registry::get_value_type(ty).get_any_deserialize_seed()
                         {
                             if let Some(value) = seq.next_element_seed(seed)? {
-                                Ok(SharedReference(Some(ty), value.into()))
+                                Ok(SharedReference(ty, value.into()))
                             } else {
                                 Err(serde::de::Error::invalid_length(
                                     1,
@@ -161,6 +181,7 @@ impl<'de> Deserialize<'de> for SharedReference {
 pub struct TransientSharedValue(pub Arc<dyn MagicAny>);
 
 impl TransientSharedValue {
+    #[allow(dead_code)]
     pub fn downcast<T: MagicAny>(self) -> Option<Arc<T>> {
         match Arc::downcast(self.0.magic_any_arc()) {
             Ok(data) => Some(data),
@@ -202,10 +223,10 @@ impl<'de> Deserialize<'de> for TransientSharedValue {
 }
 
 #[derive(Debug, Clone, PartialOrd, Ord)]
-pub struct SharedValue(pub Option<ValueTypeId>, pub Arc<dyn MagicAny>);
+pub struct SharedValue<T: TypeData>(pub T, pub Arc<dyn MagicAny>);
 
-impl SharedValue {
-    pub fn downcast<T: Any + Send + Sync>(self) -> Option<Arc<T>> {
+impl<T: TypeData> SharedValue<T> {
+    pub fn downcast<Ty: Any + Send + Sync>(self) -> Option<Arc<Ty>> {
         match Arc::downcast(self.1.magic_any_arc()) {
             Ok(data) => Some(data),
             Err(_) => None,
@@ -213,7 +234,7 @@ impl SharedValue {
     }
 }
 
-impl PartialEq for SharedValue {
+impl<T: TypeData> PartialEq for SharedValue<T> {
     // this breaks without the ref
     #[allow(clippy::op_ref)]
     fn eq(&self, other: &Self) -> bool {
@@ -221,18 +242,18 @@ impl PartialEq for SharedValue {
     }
 }
 
-impl Eq for SharedValue {}
+impl<T: TypeData> Eq for SharedValue<T> {}
 
-impl Hash for SharedValue {
+impl<T: TypeData + Hash> Hash for SharedValue<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.0.hash(state);
         self.1.hash(state);
     }
 }
 
-impl Display for SharedValue {
+impl<T: TypeData> Display for SharedValue<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(ty) = self.0 {
+        if let Some(ty) = self.0.type_id() {
             write!(f, "value of type {}", registry::get_value_type(ty).name)
         } else {
             write!(f, "untyped value")
@@ -240,33 +261,28 @@ impl Display for SharedValue {
     }
 }
 
-impl Serialize for SharedValue {
+impl Serialize for SharedValue<ValueTypeId> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        if let SharedValue(Some(ty), arc) = self {
-            let value_type = registry::get_value_type(*ty);
-            if let Some(serializable) = value_type.magic_as_serializable(arc) {
-                let mut t = serializer.serialize_tuple(2)?;
-                t.serialize_element(registry::get_value_type_global_name(*ty))?;
-                t.serialize_element(serializable)?;
-                t.end()
-            } else {
-                Err(serde::ser::Error::custom(format!(
-                    "{:?} is not serializable",
-                    arc
-                )))
-            }
+        let SharedValue(ty, arc) = self;
+        let value_type = registry::get_value_type(*ty);
+        if let Some(serializable) = value_type.magic_as_serializable(arc) {
+            let mut t = serializer.serialize_tuple(2)?;
+            t.serialize_element(registry::get_value_type_global_name(*ty))?;
+            t.serialize_element(serializable)?;
+            t.end()
         } else {
-            Err(serde::ser::Error::custom(
-                "untyped values are not serializable",
-            ))
+            Err(serde::ser::Error::custom(format!(
+                "{:?} is not serializable",
+                arc
+            )))
         }
     }
 }
 
-impl<'de> Deserialize<'de> for SharedValue {
+impl<'de> Deserialize<'de> for SharedValue<ValueTypeId> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -274,7 +290,7 @@ impl<'de> Deserialize<'de> for SharedValue {
         struct Visitor;
 
         impl<'de> serde::de::Visitor<'de> for Visitor {
-            type Value = SharedValue;
+            type Value = SharedValue<ValueTypeId>;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
                 formatter.write_str("a serializable shared value")
@@ -290,7 +306,7 @@ impl<'de> Deserialize<'de> for SharedValue {
                             registry::get_value_type(ty).get_magic_deserialize_seed()
                         {
                             if let Some(value) = seq.next_element_seed(seed)? {
-                                Ok(SharedValue(Some(ty), value.into()))
+                                Ok(SharedValue(ty, value.into()))
                             } else {
                                 Err(serde::de::Error::invalid_length(
                                     1,
@@ -342,9 +358,46 @@ pub enum ConcreteTaskInput {
     U64(u64),
     #[default]
     Nothing,
-    SharedValue(SharedValue),
-    TransientSharedValue(TransientSharedValue),
-    SharedReference(SharedReference),
+    SharedValue(SharedValue<ValueTypeId>),
+    #[serde(
+        serialize_with = "serialize_shared_value",
+        deserialize_with = "deserialize_shared_value"
+    )]
+    TransientSharedValue(SharedValue<()>),
+    SharedReference(SharedReference<ValueTypeId>),
+    #[serde(
+        serialize_with = "serialize_shared_ref",
+        deserialize_with = "deserialize_shared_ref"
+    )]
+    TransientSharedReference(SharedReference<()>),
+}
+
+fn serialize_shared_value<S>(_: &SharedValue<()>, _: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    unreachable!("programmer error")
+}
+
+fn deserialize_shared_value<'de, D>(_: D) -> Result<SharedValue<()>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    unreachable!("programmer error")
+}
+
+fn serialize_shared_ref<S>(_: &SharedReference<()>, _: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    unreachable!("programmer error")
+}
+
+fn deserialize_shared_ref<'de, D>(_: D) -> Result<SharedReference<()>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    unreachable!("programmer error")
 }
 
 impl ConcreteTaskInput {
@@ -408,20 +461,16 @@ impl ConcreteTaskInput {
             }
             ConcreteTaskInput::SharedValue(SharedValue(ty, _))
             | ConcreteTaskInput::SharedReference(SharedReference(ty, _)) => {
-                if let Some(ty) = *ty {
-                    let key = (trait_type, name);
-                    if let Some(func) = registry::get_value_type(ty).get_trait_method(&key) {
-                        Ok(*func)
-                    } else if let Some(func) = registry::get_trait(trait_type)
-                        .default_trait_methods
-                        .get(&key.1)
-                    {
-                        Ok(*func)
-                    } else {
-                        Err(key.1)
-                    }
+                let key = (trait_type, name);
+                if let Some(func) = registry::get_value_type(*ty).get_trait_method(&key) {
+                    Ok(*func)
+                } else if let Some(func) = registry::get_trait(trait_type)
+                    .default_trait_methods
+                    .get(&key.1)
+                {
+                    Ok(*func)
                 } else {
-                    Err(name)
+                    Err(key.1)
                 }
             }
             _ => Err(name),
@@ -435,11 +484,7 @@ impl ConcreteTaskInput {
             }
             ConcreteTaskInput::SharedValue(SharedValue(ty, _))
             | ConcreteTaskInput::SharedReference(SharedReference(ty, _)) => {
-                if let Some(ty) = *ty {
-                    registry::get_value_type(ty).has_trait(&trait_type)
-                } else {
-                    false
-                }
+                registry::get_value_type(*ty).has_trait(&trait_type)
             }
             _ => false,
         }
@@ -452,14 +497,10 @@ impl ConcreteTaskInput {
             }
             ConcreteTaskInput::SharedValue(SharedValue(ty, _))
             | ConcreteTaskInput::SharedReference(SharedReference(ty, _)) => {
-                if let Some(ty) = *ty {
-                    registry::get_value_type(ty)
-                        .traits_iter()
-                        .map(registry::get_trait)
-                        .collect()
-                } else {
-                    Vec::new()
-                }
+                registry::get_value_type(*ty)
+                    .traits_iter()
+                    .map(registry::get_trait)
+                    .collect()
             }
             _ => Vec::new(),
         }
@@ -487,8 +528,8 @@ impl From<RawVc> for ConcreteTaskInput {
     }
 }
 
-impl From<CellContent> for ConcreteTaskInput {
-    fn from(content: CellContent) -> Self {
+impl From<CellContent<ValueTypeId>> for ConcreteTaskInput {
+    fn from(content: CellContent<ValueTypeId>) -> Self {
         match content {
             CellContent(None) => ConcreteTaskInput::Nothing,
             CellContent(Some(shared_ref)) => ConcreteTaskInput::SharedReference(shared_ref),
@@ -524,6 +565,9 @@ impl Display for ConcreteTaskInput {
             ConcreteTaskInput::TransientSharedValue(_) => write!(f, "any transient value"),
             ConcreteTaskInput::SharedReference(data) => {
                 write!(f, "shared reference with {}", data)
+            }
+            ConcreteTaskInput::TransientSharedReference(data) => {
+                write!(f, "transient shared reference with {}", data)
             }
         }
     }

@@ -68,10 +68,11 @@ impl<T> Deref for TransientValue<T> {
 /// Equality and hash is implemented as pointer comparison.
 ///
 /// Doesn't require serialization, and won't be stored in the persistent cache
-/// in the future.
+/// in the future, so we don't include the `ValueTypeId` in the
+/// `SharedReference`.
 #[derive(Debug)]
 pub struct TransientInstance<T> {
-    inner: SharedReference,
+    inner: SharedReference<()>,
     phantom: PhantomData<T>,
 }
 
@@ -116,7 +117,7 @@ impl<T: Send + Sync + 'static> From<TransientInstance<T>> for Arc<T> {
     }
 }
 
-impl<T: Send + Sync + 'static> From<TransientInstance<T>> for SharedReference {
+impl<T: Send + Sync + 'static> From<TransientInstance<T>> for SharedReference<()> {
     fn from(instance: TransientInstance<T>) -> Self {
         instance.inner
     }
@@ -125,16 +126,16 @@ impl<T: Send + Sync + 'static> From<TransientInstance<T>> for SharedReference {
 impl<T: Send + Sync + 'static> From<Arc<T>> for TransientInstance<T> {
     fn from(arc: Arc<T>) -> Self {
         Self {
-            inner: SharedReference(None, arc),
+            inner: SharedReference((), arc),
             phantom: PhantomData,
         }
     }
 }
 
-impl<T: Send + Sync + 'static> TryFrom<SharedReference> for TransientInstance<T> {
+impl<T: Send + Sync + 'static> TryFrom<SharedReference<()>> for TransientInstance<T> {
     type Error = ();
 
-    fn try_from(inner: SharedReference) -> Result<Self, Self::Error> {
+    fn try_from(inner: SharedReference<()>) -> Result<Self, Self::Error> {
         if inner.1.downcast_ref::<T>().is_some() {
             Ok(Self {
                 inner,
@@ -149,7 +150,7 @@ impl<T: Send + Sync + 'static> TryFrom<SharedReference> for TransientInstance<T>
 impl<T: Send + Sync + 'static> TransientInstance<T> {
     pub fn new(value: T) -> Self {
         Self {
-            inner: SharedReference(None, Arc::new(value)),
+            inner: SharedReference((), Arc::new(value)),
             phantom: PhantomData,
         }
     }

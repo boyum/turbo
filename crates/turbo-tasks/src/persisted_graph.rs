@@ -1,20 +1,79 @@
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
+use serde::{
+    ser::{SerializeSeq, SerializeTupleVariant},
+    Deserialize, Serialize,
+};
 
 use crate::{
     backend::{CellContent, PersistentTaskType},
-    CellId, RawVc, TaskId,
+    task::concrete_task_input::TypeData,
+    CellId, RawVc, TaskId, ValueTypeId,
 };
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub enum TaskCell {
-    Content(CellContent),
+#[derive(Clone, Debug)]
+pub enum TaskCell<T: TypeData> {
+    Content(CellContent<T>),
     NeedComputation,
 }
 
-impl Default for TaskCell {
+impl<T: TypeData> TaskCell<T> {
+    fn typed(&self, type_id: crate::ValueTypeId) -> TaskCell<ValueTypeId> {
+        match self {
+            TaskCell::Content(content) => TaskCell::Content(content.typed(type_id)),
+            TaskCell::NeedComputation => TaskCell::NeedComputation,
+        }
+    }
+
+    fn untyped(&self) -> TaskCell<()> {
+        match self {
+            TaskCell::Content(content) => TaskCell::Content(content.untyped()),
+            TaskCell::NeedComputation => TaskCell::NeedComputation,
+        }
+    }
+}
+
+impl<T: TypeData> Default for TaskCell<T> {
     fn default() -> Self {
         TaskCell::Content(CellContent(None))
+    }
+}
+
+// for safety reasons, we do not want to allow TaskCell<()> to be
+// (de)serialized. all data on disk _must_ include type info
+impl Serialize for TaskCell<ValueTypeId> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            TaskCell::Content(content) => {
+                let mut x = serializer.serialize_tuple_variant("TaskCell", 0, "Content", 1)?;
+                x.serialize_field(content)?;
+                x.end()
+            }
+            TaskCell::NeedComputation => {
+                serializer.serialize_unit_variant("TaskCell", 1, "NeedComputation")
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for TaskCell<ValueTypeId> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        enum Inner {
+            Content(CellContent<ValueTypeId>),
+            NeedComputation,
+        }
+
+        let data: Inner = Deserialize::deserialize(deserializer)?;
+        match data {
+            Inner::Content(content) => Ok(TaskCell::Content(content)),
+            Inner::NeedComputation => Ok(TaskCell::NeedComputation),
+        }
     }
 }
 
@@ -22,9 +81,44 @@ impl Default for TaskCell {
 pub struct TaskData {
     pub children: Vec<TaskId>,
     pub dependencies: Vec<RawVc>,
-    pub cells: Vec<(CellId, TaskCell)>,
+    pub cells: TaskCells,
     pub output: RawVc,
 }
+
+/// A newtype struct that intercepts serde. This is required
+/// because for safety reasons, TaskCell<()> is not allowed to
+/// be deserialized. We augment it with type data then write
+/// it. This is inefficient on disk but could be alleviated later.
+#[derive(Debug)]
+pub struct TaskCells(pub Vec<(CellId, TaskCell<()>)>);
+
+impl Serialize for TaskCells {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut vec = serializer.serialize_seq(Some(self.0.len()))?;
+        for (cell_id, cell) in &self.0 {
+            vec.serialize_element(&(cell_id, cell.typed(cell_id.type_id)))?;
+        }
+        vec.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for TaskCells {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let data: Vec<(CellId, TaskCell<ValueTypeId>)> = Vec::deserialize(deserializer)?;
+        Ok(TaskCells(
+            data.into_iter()
+                .map(|(id, cell)| (id, cell.untyped()))
+                .collect(),
+        ))
+    }
+}
+
 pub struct ReadTaskState {
     pub clean: bool,
     pub keeps_external_active: bool,

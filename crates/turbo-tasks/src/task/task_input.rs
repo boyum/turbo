@@ -6,7 +6,6 @@ use std::{
 
 use anyhow::{anyhow, bail, Result};
 
-use super::concrete_task_input::TransientSharedValue;
 use crate::{
     magic_any::MagicAny, ConcreteTaskInput, RawVc, SharedValue, TaskId, TransientInstance,
     TransientValue, TypedForInput, Value, ValueTypeId, Vc, VcValueType,
@@ -261,10 +260,7 @@ where
 
     fn into_concrete(self) -> ConcreteTaskInput {
         let raw_value: T = self.into_value();
-        ConcreteTaskInput::SharedValue(SharedValue(
-            Some(T::get_value_type_id()),
-            Arc::new(raw_value),
-        ))
+        ConcreteTaskInput::SharedValue(SharedValue(T::get_value_type_id(), Arc::new(raw_value)))
     }
 }
 
@@ -275,7 +271,7 @@ where
     fn try_from_concrete(input: &ConcreteTaskInput) -> Result<Self> {
         match input {
             ConcreteTaskInput::TransientSharedValue(value) => {
-                let v = value.0.downcast_ref::<T>().ok_or_else(|| {
+                let v = value.1.downcast_ref::<T>().ok_or_else(|| {
                     anyhow!(
                         "invalid task input type, expected {} got {:?}",
                         type_name::<T>(),
@@ -290,7 +286,7 @@ where
 
     fn into_concrete(self) -> ConcreteTaskInput {
         let raw_value: T = self.into_value();
-        ConcreteTaskInput::TransientSharedValue(TransientSharedValue(Arc::new(raw_value)))
+        ConcreteTaskInput::TransientSharedValue(SharedValue((), Arc::new(raw_value)))
     }
 }
 
@@ -301,7 +297,7 @@ where
     fn try_from_concrete(input: &ConcreteTaskInput) -> Result<Self> {
         match input {
             ConcreteTaskInput::SharedReference(reference) => {
-                if let Ok(i) = reference.clone().try_into() {
+                if let Ok(i) = reference.untyped().try_into() {
                     Ok(i)
                 } else {
                     bail!(
@@ -316,7 +312,7 @@ where
     }
 
     fn into_concrete(self) -> ConcreteTaskInput {
-        ConcreteTaskInput::SharedReference(self.into())
+        ConcreteTaskInput::TransientSharedReference(self.into())
     }
 }
 

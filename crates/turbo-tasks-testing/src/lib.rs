@@ -22,6 +22,7 @@ use turbo_tasks::{
     test_helpers::with_turbo_tasks_for_testing,
     util::{SharedError, StaticOrArc},
     CellId, InvalidationReason, RawVc, TaskId, TraitTypeId, TurboTasksApi, TurboTasksCallApi,
+    ValueTypeId,
 };
 
 enum Task {
@@ -32,7 +33,7 @@ enum Task {
 #[derive(Default)]
 pub struct VcStorage {
     this: Weak<Self>,
-    cells: Mutex<HashMap<(TaskId, CellId), CellContent>>,
+    cells: Mutex<HashMap<(TaskId, CellId), CellContent<()>>>,
     tasks: Mutex<Vec<Task>>,
 }
 
@@ -168,10 +169,10 @@ impl TurboTasksApi for VcStorage {
         &self,
         task: TaskId,
         index: CellId,
-    ) -> Result<Result<CellContent, EventListener>> {
+    ) -> Result<Result<CellContent<ValueTypeId>, EventListener>> {
         let map = self.cells.lock().unwrap();
         if let Some(cell) = map.get(&(task, index)) {
-            Ok(Ok(cell.clone()))
+            Ok(Ok(cell.typed(index.type_id)))
         } else {
             Ok(Ok(CellContent::default()))
         }
@@ -181,10 +182,10 @@ impl TurboTasksApi for VcStorage {
         &self,
         task: TaskId,
         index: CellId,
-    ) -> Result<Result<CellContent, EventListener>> {
+    ) -> Result<Result<CellContent<ValueTypeId>, EventListener>> {
         let map = self.cells.lock().unwrap();
         if let Some(cell) = map.get(&(task, index)) {
-            Ok(Ok(cell.clone()))
+            Ok(Ok(cell.typed(index.type_id)))
         } else {
             Ok(Ok(CellContent::default()))
         }
@@ -194,7 +195,7 @@ impl TurboTasksApi for VcStorage {
         &self,
         current_task: TaskId,
         index: CellId,
-    ) -> Result<CellContent> {
+    ) -> Result<CellContent<ValueTypeId>> {
         self.read_own_task_cell(current_task, index)
     }
 
@@ -223,19 +224,19 @@ impl TurboTasksApi for VcStorage {
         unimplemented!()
     }
 
-    fn read_own_task_cell(&self, task: TaskId, index: CellId) -> Result<CellContent> {
+    fn read_own_task_cell(&self, task: TaskId, index: CellId) -> Result<CellContent<ValueTypeId>> {
         let map = self.cells.lock().unwrap();
         if let Some(cell) = map.get(&(task, index)) {
-            Ok(cell.clone())
+            Ok(cell.typed(index.type_id))
         } else {
             Ok(CellContent::default())
         }
     }
 
-    fn update_own_task_cell(&self, task: TaskId, index: CellId, content: CellContent) {
+    fn update_own_task_cell(&self, task: TaskId, index: CellId, content: CellContent<ValueTypeId>) {
         let mut map = self.cells.lock().unwrap();
         let cell = map.entry((task, index)).or_default();
-        *cell = content;
+        *cell = content.untyped();
     }
 
     fn connect_task(&self, _task: TaskId) {
