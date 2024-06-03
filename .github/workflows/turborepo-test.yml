@@ -314,6 +314,18 @@ jobs:
         run: |
           cargo groups check turborepo-libraries --features rustls-tls
 
+  # From https://github.com/ast-grep/action/tree/v1.4/?tab=readme-ov-file#basic
+  ast-grep-lint:
+    runs-on: ubuntu-latest
+    name: Run ast-grep lint
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: ast-grep lint step
+        uses: ast-grep/action@v1.4
+        with:
+          version: 0.22.5
+
   rust_clippy:
     needs: [rust_check]
     name: Turborepo rust clippy
@@ -334,10 +346,6 @@ jobs:
       - name: Run cargo clippy
         run: |
           cargo groups clippy turborepo-libraries --features rustls-tls -- --deny clippy::all
-
-      - name: Run ast-grep lints
-        run: |
-          npx --package @ast-grep/cli -- ast-grep scan $(cargo groups list turborepo-libraries | awk '{ print $2 }' | tr '\n' ' ')
 
   rust_test:
     needs: [rust_check]
