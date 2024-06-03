@@ -5,6 +5,7 @@ members = [
   "crates/node-file-trace",
   "crates/tower-uds",
   "crates/turbo-tasks*",
+  "crates/turbo-prehash",
   "crates/turbopack*",
   "crates/turborepo*",
   "packages/turbo-repository/rust",
@@ -111,8 +112,8 @@ miette = { version = "5.10.0", features = ["fancy"] }
 mdxjs = "0.2.2"
 modularize_imports = { version = "0.68.14" }
 styled_components = { version = "0.96.15" }
-styled_jsx = { version = "0.73.21" }
-swc_core = { version = "0.92.5", features = [
+styled_jsx = { version = "0.73.22" }
+swc_core = { version = "0.92.8", features = [
   "ecma_loader_lru",
   "ecma_loader_parking_lot",
 ] }
@@ -128,6 +129,7 @@ signposter = { path = "crates/turbo-tasks-signposter" }
 signposter-sys = { path = "crates/turbo-tasks-signposter-sys" }
 tracing-signpost = { path = "crates/turbo-tasks-tracing-signpost" }
 swc-ast-explorer = { path = "crates/turbopack-swc-ast-explorer" }
+turbo-prehash = { path = "crates/turbo-prehash" }
 turbo-tasks-malloc = { path = "crates/turbo-tasks-malloc", default-features = false }
 turbo-tasks = { path = "crates/turbo-tasks" }
 turbo-tasks-build = { path = "crates/turbo-tasks-build" }
